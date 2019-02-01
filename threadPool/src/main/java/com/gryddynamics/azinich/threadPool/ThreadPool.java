@@ -1,5 +1,7 @@
 package com.gryddynamics.azinich.threadPool;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 
 public class ThreadPool {
@@ -7,44 +9,68 @@ public class ThreadPool {
     private static ThreadPool threadPoolInstance;
     private static int threadNumber = 4;
     private final LinkedBlockingQueue<Tuple> queue;
-    private final Worker[] workers;
-
-    static {
-        threadPoolInstance = new ThreadPool();
-    }
+    private List<Worker> workers;
 
 
     static ThreadPool getThreadPull() {
+        if (threadPoolInstance == null)
+            threadPoolInstance = new ThreadPool();
         return threadPoolInstance;
-    }
-
-    public static void setThreadNumber(int threadNumber) {
-        ThreadPool.threadNumber = threadNumber;
     }
 
     private ThreadPool() {
         queue = new LinkedBlockingQueue<>();
-        workers = new Worker[threadNumber];
+        workers = new ArrayList<>(threadNumber);
 
-        for (int i = 0; i < threadNumber; i++) {
-            workers[i] = new Worker();
-            workers[i].start();
-        }
-
+        createWorkers(threadNumber);
     }
 
-    void submit(Runnable runnable, long sleepTime) {
+    public void interruptAll() {
+        workers.forEach(Thread::interrupt);
+    }
+
+    public void submit(Runnable runnable, long sleepTime) {
         synchronized (queue) {
             queue.add(new Tuple(runnable, sleepTime));
             queue.notify();
         }
     }
 
-    private class Worker extends Thread {
-        public void run() {
-            Tuple tuple;
+    public void setThreadNumber(int threadNumber) {
+        int prevThreadNumber = ThreadPool.threadNumber;
 
-            while (true) {
+        if (threadNumber > prevThreadNumber) {
+            createWorkers(threadNumber - prevThreadNumber);
+        }
+        if (threadNumber < prevThreadNumber) {
+            interruptAll();
+            createWorkers(threadNumber);
+        }
+
+        ThreadPool.threadNumber = threadNumber;
+    }
+
+    private void createWorkers(int workersNumber) {
+        for (int i = 0; i < workersNumber; i++) {
+            Worker w = new Worker();
+            workers.add(w);
+            w.start();
+        }
+    }
+
+    @Override
+    protected void finalize() throws Throwable {
+        super.finalize();
+        interruptAll();
+    }
+
+    private class Worker extends Thread {
+
+        public void run() {
+
+            Tuple taskSleepPair;
+
+            while (!Thread.interrupted()) {
                 synchronized (queue) {
                     while (queue.isEmpty()) {
                         try {
@@ -53,12 +79,18 @@ public class ThreadPool {
                             System.out.println("An error occurred while waiting: " + e.getMessage());
                         }
                     }
-                    tuple = queue.poll();
+                    taskSleepPair = queue.poll();
                 }
 
                 try {
-                    Thread.sleep(tuple.getValue());
-                    tuple.getKey().run();
+                    Long sleepTime = taskSleepPair.getValue();
+                    Runnable task = taskSleepPair.getKey();
+
+                    if (sleepTime != 0) {
+                        Thread.sleep(sleepTime);
+                    }
+                    task.run();
+
                 } catch (RuntimeException | InterruptedException e) {
                     System.out.println("Thread pool is interrupted due to: " + e.getMessage());
                 }
